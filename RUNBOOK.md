@@ -85,6 +85,23 @@ release pipeline runs it from a `git archive`.
 
 ## 3. Configure
 
+Generate the keys (below), then let `setup/configure_repo.sh` do the rest of this section.
+Run it from a clone, with gh logged in as a repository admin:
+
+```bash
+bash setup/configure_repo.sh
+```
+
+It asks for the two cosign passwords, then sets:
+- the Actions permissions;
+- the variables and secrets;
+- the 11 environments;
+- the `grants` branch;
+- the three rulesets.
+
+Then it runs the settings audit. It is safe to run again. The subsections below describe what
+it sets, and are the manual way to do it.
+
 ### Keys
 
 Generate them in a directory of their own, outside every repository, and keep it until the PoC
