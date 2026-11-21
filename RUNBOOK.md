@@ -102,6 +102,27 @@ It asks for the two cosign passwords, then sets:
 Then it runs the settings audit. It is safe to run again. The subsections below describe what
 it sets, and are the manual way to do it.
 
+**No machine of your own?** Use a GitHub Codespace (a Linux shell in the browser).
+1. Open the repository → **Code** → **Codespaces** → **Create codespace on main**.
+2. In its terminal, run everything in that **one** terminal. The Codespace's own token cannot
+   change settings, so log in as yourself first:
+
+   ```bash
+   unset GITHUB_TOKEN GH_TOKEN && gh auth login --hostname github.com --git-protocol https --web
+   ```
+
+3. Install cosign (checksum-verified, from the kit's lock):
+
+   ```bash
+   python3 -I ci/install_verified_tools.py --kind promote && export PATH="$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/verified-security-tools:$PATH"
+   ```
+
+4. Generate the keys (below) and run `bash setup/configure_repo.sh`.
+5. Keep the Codespace until the PoC ends: it holds `~/ghcr-poc-keys`, has docker for the final
+   `docker run`, and stops by itself when idle. Then delete it (Codespaces page → `…` →
+   Delete). After that, the private keys exist only as GitHub secrets, which nobody can read
+   back. If you need them again, follow section 8.
+
 ### Keys
 
 Generate them in a directory of their own, outside every repository, and keep it until the PoC
