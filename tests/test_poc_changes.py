@@ -674,3 +674,99 @@ class ImageBuildTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReleaseChainSimulator:
+    """Minimal model of how GitHub Actions decides whether a job runs (PoC regression test).
+
+    A job without `if` runs only when EVERY job above it in the `needs` chain succeeded, so a
+    skipped job (e.g. high_review when the scan found no High CVEs) also skips everything
+    below it, even jobs whose direct `needs` succeeded. An `if` without a status function gets
+    an implicit success() in front. Jobs that run are assumed to succeed unless told to fail.
+    """
+    STATUS = re.compile(r'\b(always|cancelled|success|failure)\(\)')
+
+    def __init__(self, workflow_text):
+        self.jobs = yaml.load(workflow_text, Loader=yaml.BaseLoader)['jobs']
+
+    def needs(self, name):
+        value = self.jobs[name].get('needs', [])
+        return [value] if isinstance(value, str) else list(value)
+
+    def ancestors(self, name):
+        seen, todo = set(), self.needs(name)
+        while todo:
+            job = todo.pop()
+            if job not in seen:
+                seen.add(job)
+                todo += self.needs(job)
+        return seen
+
+    def run(self, decision, failing=()):
+        results = {}
+        pending = list(self.jobs)
+        while pending:
+            name = next(n for n in pending if all(d in results for d in self.needs(n)))
+            pending.remove(name)
+            all_ok = all(results[a] == 'success' for a in self.ancestors(name))
+            expr = self.jobs[name].get('if')
+            if expr is None:
+                runs = all_ok
+            else:
+                expr = expr.strip()
+                if expr.startswith('${{') and expr.endswith('}}'):
+                    expr = expr[3:-2].strip()
+                implicit = not self.STATUS.search(expr)
+                py = (expr.replace('!cancelled()', 'True').replace('always()', 'True')
+                      .replace('&&', ' and ').replace('||', ' or '))
+                py = re.sub(r"needs\.scan\.outputs\.decision", repr(decision), py)
+                py = re.sub(r"needs\.([a-z_]+)\.result", lambda m: repr(results[m.group(1)]), py)
+                py = py.replace('github.ref', repr('refs/heads/main'))
+                if re.search(r'[a-z_]+\.[a-z_]+|\(\)', py.replace("'", ' ')):
+                    raise AssertionError(f'{name}: condition not understood by the model: {expr}')
+                runs = eval(py, {'__builtins__': {}}, {'True': True}) and (all_ok or not implicit)
+            results[name] = ('failure' if name in failing else 'success') if runs else 'skipped'
+        return results
+
+
+@unittest.skipIf(yaml is None, 'PyYAML required')
+class ReleaseChainTests(unittest.TestCase):
+    """The first live release (2026-11-24) promoted but skipped independent_rescan,
+    independent_verification and sign: high_review was skipped (no High CVEs) and GitHub
+    carried that skip past promote. Every outcome must now end where it should."""
+    PATH = '.github/workflows/application-release.yml'
+
+    def simulate(self, text, decision, failing=()):
+        return ReleaseChainSimulator(text).run(decision, failing)
+
+    def test_clean_and_reviewed_releases_reach_sign(self):
+        text = (ROOT / self.PATH).read_text()
+        for decision in ('PASS', 'REVIEW'):
+            with self.subTest(decision=decision):
+                results = self.simulate(text, decision)
+                self.assertEqual(results['high_review'], 'success' if decision == 'REVIEW' else 'skipped')
+                for job in ('promote', 'independent_rescan', 'independent_verification', 'sign'):
+                    self.assertEqual(results[job], 'success', job)
+
+    def test_failures_never_reach_sign(self):
+        text = (ROOT / self.PATH).read_text()
+        for failing in ('high_review', 'compile', 'scan', 'push_candidate', 'promote',
+                        'independent_rescan', 'independent_verification'):
+            with self.subTest(failing=failing):
+                decision = 'REVIEW' if failing == 'high_review' else 'PASS'
+                self.assertNotEqual(self.simulate(text, decision, {failing})['sign'], 'success')
+
+    def test_model_reproduces_the_live_failure(self):
+        old_if = ("if: always() && needs.push_candidate.result == 'success' && "
+                  "(needs.high_review.result == 'success' || needs.high_review.result == 'skipped')")
+        text = (ROOT / self.PATH).read_text()
+        old = re.sub(r"\n    if: \$\{\{ !cancelled\(\) && needs\.(independent_rescan|independent_verification|promote)"
+                     r"\.result == 'success' \}\}", '', text)
+        old = re.sub(r"    if: \$\{\{ !cancelled\(\) && needs\.push_candidate.*\}\}", '    ' + old_if, old)
+        results = self.simulate(old, 'PASS')
+        self.assertEqual((results['promote'], results['independent_rescan'], results['sign']),
+                         ('success', 'skipped', 'skipped'))
+
+    def test_no_job_uses_always(self):
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            self.assertNotIn('always() &&', path.read_text(), path.name)

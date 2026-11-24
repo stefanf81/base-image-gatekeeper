@@ -397,7 +397,10 @@ jobs:
 
   promote:
     needs: [scan, push_candidate, high_review]
-    if: always() && needs.push_candidate.result == 'success' && (needs.high_review.result == 'success' || needs.high_review.result == 'skipped')
+    # PoC: !cancelled(), not always(): a cancelled release must not promote. high_review is
+    # skipped when the scan found no High CVEs, which GitHub carries down the whole chain:
+    # every later job needs an explicit condition, or the clean path never reaches `sign`.
+    if: ${{ !cancelled() && needs.push_candidate.result == 'success' && (needs.high_review.result == 'success' || needs.high_review.result == 'skipped') }}
     runs-on: ubuntu-24.04
     environment: ghcr-application-promoter
     timeout-minutes: 30
@@ -450,6 +453,7 @@ jobs:
 
   independent_rescan:
     needs: promote
+    if: ${{ !cancelled() && needs.promote.result == 'success' }}
     runs-on: ubuntu-24.04
     environment: ghcr-read-only
     timeout-minutes: 45
@@ -487,6 +491,7 @@ jobs:
 
   independent_verification:
     needs: independent_rescan
+    if: ${{ !cancelled() && needs.independent_rescan.result == 'success' }}
     runs-on: ubuntu-24.04
     environment: independent-verification
     timeout-minutes: 15
@@ -522,6 +527,7 @@ jobs:
 
   sign:
     needs: independent_verification
+    if: ${{ !cancelled() && needs.independent_verification.result == 'success' }}
     runs-on: ubuntu-24.04
     environment: ghcr-application-signing
     timeout-minutes: 25
