@@ -228,8 +228,8 @@ GH_TOKEN="$(gh auth token)" python3 ci/audit_repo_settings.py --repo stefanf81/b
 
 | # | Action | Expected result |
 | --- | --- | --- |
-| 1 | Run **GHCR - bootstrap first approved base (PoC)** with `confirm_digest` = `sha256:577acb7a…85` (full value from `catalog/Dockerfile.temurin`), then approve the `base-manual-approval` deployment | `approved/eclipse-temurin:21-jre-resolute` exists and is signed. The record carries `"bootstrap": true` and `approver: self:stefanf81` (in the `bootstrap-evidence` artifact). |
-| 2 | Packages (your profile → Packages) | `approved/eclipse-temurin` is linked to this repository. Make it **public**: two copies of a four-platform JRE count against the free private storage. |
+| 1 | Run **GHCR - bootstrap first approved base (PoC)** with `confirm_digest` = `sha256:577acb7a…85` (full value from `catalog/Dockerfile.temurin`), then approve the `base-manual-approval` deployment | `approved/eclipse-temurin:21-jre-resolute` exists and is signed. The record carries `"bootstrap": true` and `approver: self:stefanf81` (in the `bootstrap-evidence` artifact). If the copy fails with `DENIED` on a manifest push right after the first manifest went through, re-run the failed job: see "First push into a new package" in section 7. |
+| 2 | Packages (your profile → Packages) | `approved/eclipse-temurin` is linked to this repository. In its **Package settings**: make it **public** (two copies of a four-platform JRE count against the free private storage), and under *Manage Actions access* lower the repository's role from **Admin** (GitHub's default for a package a workflow created) to **Write**, which is all the pipeline needs. |
 | 3 | Run **GHCR - approve public base image** | See the walkthrough below the table. |
 | 4 | Run it again | `precheck`: `approved`; every other job is skipped. |
 | 5 | Note the `main` HEAD SHA | Its **Example app tests** run on `main` is green: `base-image-gate`, then `test`. |
@@ -247,16 +247,24 @@ GH_TOKEN="$(gh auth token)" python3 ci/audit_repo_settings.py --repo stefanf81/b
   - "Candidate is the approved baseline itself …";
   - per platform, "absolute review" lines for SUID/SGID files, world-writable files and
     directories, symlinks into watched locations, and Critical/High/unknown vulnerabilities.
-- Read them before you approve `promote`. Expect, for a stock Temurin/Ubuntu image:
-  - the usual setuid tools (`su`, `passwd`, `mount`, …);
-  - world-writable only for sticky temp directories (`tmp`, `var/tmp`, `run/lock`);
+- `evaluate` takes a few minutes: under 4 for all four platforms on 2026-11-24.
+- Read them before you approve `promote`. For `eclipse-temurin:21-jre-resolute@sha256:577acb7a…`
+  (Ubuntu 26.04.1 LTS), the first live run found exactly this on all four platforms:
+  - 11 SUID/SGID files, the stock Ubuntu ones: `chage`, `chfn`, `chsh`, `expiry`, `gpasswd`,
+    `mount`, `passwd`, `su`, `umount`, `unix_chkpwd`, `pam_extrausers_chkpwd`;
+  - 4 world-writable directories, all sticky (`1777`) and owned by root: `tmp`, `var/tmp`,
+    `run/lock` and `var/lib/pebble/default`. The last one belongs to `/usr/bin/pebble`,
+    Canonical's Pebble service manager, which Ubuntu ships in its container base images
+    (Go module `github.com/canonical/pebble`, not owned by a `.deb` package);
   - among the symlinks into watched locations, `var/lock` (pointing to `/run/lock`);
-  - no Critical vulnerabilities.
+  - no Critical, High or unrated vulnerabilities (amd64: 231 Medium, 13 Low).
 
   Anything else needs a reason before you approve. The full lists are in `decision.json` of
-  the `base-evidence` artifact.
+  the `base-evidence` artifact; the `*.fs.json` files show each path's mode and owner, and
+  the `*.syft.json` files show which package a file belongs to.
 - Once approved, `promote` signs a record with the current policy fingerprint.
-- Make `quarantine/eclipse-temurin` public too.
+- Make `quarantine/eclipse-temurin` public too, and lower its repository role to **Write**
+  as in step 2.
 
 **If `scan` ends in BLOCK** (a Critical or unrated finding in the Ubuntu base), add an
 exception to `critical_exceptions` in `policy/config.json` via a pull request. Scope it to the
@@ -366,9 +374,11 @@ instead of 26.04). The repository is the same, so the gate compares the two dige
 ## 7. Known risks the live run has to settle
 
 1. **cosign v3 bundles on GHCR:** one signature plus several attestations on the same digest.
-   Steps 1 and 3 exercise this.
+   Settled for base images on 2026-11-24: steps 1 and 3 signed, attested and verified
+   `approved/eclipse-temurin`. The application image (step 7) is still open.
 2. **Package visibility and linking** of nested names (`approved/eclipse-temurin`) created by
-   `GITHUB_TOKEN`.
+   `GITHUB_TOKEN`. Settled on 2026-11-24: both packages were created and linked to this
+   repository (with role Admin, see step 2), and can be made public.
 3. **`actions/attest` v4** may also want `artifact-metadata: write`. The kit grants `id-token`
    and `attestations` only.
 4. **Grant cache age:** compare raw.githubusercontent.com's `age`/`x-cache` headers on the
@@ -381,7 +391,15 @@ instead of 26.04). The repository is the same, so the gate compares the two dige
    gate (fail closed: re-run the job). It reads GHCR with the job's `packages: read` token,
    which needs the approved package to be linked to this repository (step 2 of section 4).
 8. **CI gate duration:** a moved pin is scanned on every platform of the index (four for
-   Temurin), twice per image. Expect tens of minutes; the job's limit is 120.
+   Temurin), twice per image. The same scan took under 4 minutes in step 3, so expect a few
+   minutes; the job's limit is 120.
+9. **First push into a new package:** a multi-platform copy pushes its platform manifests in
+   parallel. The first one creates the package, and GHCR can refuse the others with `DENIED`
+   for a moment while it is still setting the package up. This happened on the bootstrap's
+   first attempt (2026-11-24). Re-run the failed job: the package exists then, the copy is
+   idempotent, and the guards ignore the partial copy (no tag, no complete index). Only
+   the first push into `approved/` and `quarantine/` can hit this; the application packages
+   hold single-platform images.
 
 Fixed after review, still worth watching:
 - **Image build:** it now runs on the current Docker context's builder instead of
@@ -410,4 +428,8 @@ tag.
 
 | Date | Step / test | Run URL | Result | Notes |
 | --- | --- | --- | --- | --- |
+| 2026-11-21 | First push: Example app tests | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/44908914149 | green on attempt 2 | Attempt 1: Maven Central answered HTTP 429; `base-image-gate` skipped (baseline predates the gate) |
+| 2026-11-24 | Section 3: `setup/configure_repo.sh` from a Codespace | | passed | Settings audit passed on the first run |
+| 2026-11-24 | Step 1: bootstrap | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45489185941 | green on attempt 2 | Attempt 1: `DENIED` on the first push into the new package (section 7, risk 9) |
+| 2026-11-24 | Step 3: base approval | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45492263750 | REVIEW, approved, signed | Findings as listed in the step 3 walkthrough; `evaluate` took 3.5 minutes |
 | | | | | |
