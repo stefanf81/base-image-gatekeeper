@@ -290,3 +290,15 @@ audit behave as in the kit. Additions: a bootstrap workflow for the first baseli
 - `release-gate.yml`: the grant job asks for `actions: read` to read the CI runs.
 - `security-pr.yml`, `ci/validate-local.sh`: also run the `base-gate/` and `release-gate/`
   suites.
+
+## First live run (2026-11-24)
+
+- `application-release.yml`: a release whose scan found no High CVEs skips `high_review`, and
+  GitHub skips every job below a skipped one unless it has its own condition. The kit's
+  `promote` had one, but `independent_rescan`, `independent_verification` and `sign` did not,
+  so the clean path promoted an unsigned image and stopped. They now run on
+  `!cancelled() && needs.<previous>.result == 'success'`; `promote` uses `!cancelled()`
+  instead of `always()`, so a cancelled release no longer promotes.
+  `tests/test_poc_changes.py` (`ReleaseChainTests`) models GitHub's skip rules and checks
+  every outcome; run on the unfixed file, it reproduces the live failure.
+- `example-app/ci/build_and_test.sh`: Maven waits out Maven Central rate limits (HTTP 429).
