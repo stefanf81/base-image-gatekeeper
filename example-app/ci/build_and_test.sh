@@ -22,6 +22,14 @@
 set -Eeuo pipefail
 timestamp="${BUILD_OUTPUT_TIMESTAMP:-$(git show -s --format=%cI HEAD)}"
 args=(-B -ntp "-Dproject.build.outputTimestamp=$timestamp")
+# Maven Central rate-limits shared CI runner addresses (HTTP 429). Maven's default of 3 retries
+# at 5/10/15 s gave up after about 30 s, twice in this repository's first CI runs. Wait it out
+# instead: 8 retries at 10, 20, ... 80 s (about 6 minutes; a Retry-After header is obeyed).
+# Retries change nothing in the outputs. Maven 3.9 (Resolver 1.9) reads aether.connector.*;
+# Maven 4 (Resolver 2) reads aether.transport.*; each ignores the other.
+for prefix in aether.connector.http aether.transport.http; do
+  args+=("-D$prefix.retryHandler.count=8" "-D$prefix.retryHandler.interval=10000")
+done
 if [ "${CI_SKIP_TESTS:-0}" = 1 ]; then
   args+=(-DskipTests)
 fi
