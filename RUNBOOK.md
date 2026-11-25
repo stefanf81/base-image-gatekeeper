@@ -13,6 +13,7 @@ The repository name is a default. To use another one, change, in one commit:
 - `REPO`/`GATE_REPO` in both files under `release-gate/tests/`;
 - `tests/test_v3_fixes.py`;
 - the allowlist lookup in `base-gate/tests/test_base_gate.py`;
+- the `mirrors` entry in `base-gate/config.json` (it names the approved GHCR copy);
 - the variables in step 3.
 
 ## What was verified before hand-off, and what was not
@@ -170,6 +171,17 @@ Each `*_B64` secret below is `base64 -w0 <file>` (on macOS: `base64 -i <file>`).
 
 - `APPROVAL_PUBKEY_B64`: `approval.pub`
 - `RELEASE_GATE_PUBKEY_B64`: `gate.pub`
+
+### Optional: Docker Hub login for the CI gate
+
+Docker Hub limits anonymous pulls per IP address, and GitHub's runners share addresses, so the
+CI gate's comparisons are sometimes refused. A refusal fails the gate. To avoid that:
+- create a free Docker Hub account;
+- under Account settings → Personal access tokens, create a token with the
+  **Public Repo Read-only** scope;
+- set the repository variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN`.
+
+`setup/configure_repo.sh` does not set these.
 
 ### Environments
 
@@ -387,9 +399,19 @@ instead of 26.04). The repository is the same, so the gate compares the two dige
    JDK 17.
 6. **Approval expiry:** base approvals expire after 720 h (`approval_max_age_hours`), and
    nothing re-runs them on a schedule. After 30 days, releases fail until step 3 is repeated.
-7. **CI gate pulls:** the gate reads Docker Hub anonymously, and a rate-limited pull fails the
-   gate (fail closed: re-run the job). It reads GHCR with the job's `packages: read` token,
-   which needs the approved package to be linked to this repository (step 2 of section 4).
+7. **CI gate pulls:** registries limit anonymous downloads per IP address. Running the gate
+   locally on 2026-11-25 against real images, Docker Hub refused with HTTP 429 and AWS's
+   public mirror with "Data limit exceeded". A refused pull fails the gate (fail closed).
+   - The gate now reads the old pin from the approved GHCR copy (`mirrors` in
+     `base-gate/config.json`).
+   - It can log in to Docker Hub for the new image (section 3, optional).
+   - Each source is used only if it serves exactly the pinned digest.
+   - GHCR is read with the job's `packages: read` token, which needs the approved package to
+     be linked to this repository (step 2 of section 4).
+10. **Platform drift blocks:** a candidate published for more or fewer CPU platforms than the
+    pin is blocked, with no acceptance possible. Example: `21-jre-noble` adds
+    `linux/riscv64` (found on 2026-11-25). If upstream adds a platform to `21-jre-resolute`,
+    updates stay blocked until the rule or the pin changes.
 8. **CI gate duration:** a moved pin is scanned on every platform of the index (four for
    Temurin), twice per image. The same scan took under 4 minutes in step 3, so expect a few
    minutes; the job's limit is 120.
@@ -432,4 +454,10 @@ tag.
 | 2026-11-24 | Section 3: `setup/configure_repo.sh` from a Codespace | | passed | Settings audit passed on the first run |
 | 2026-11-24 | Step 1: bootstrap | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45489185941 | green on attempt 2 | Attempt 1: `DENIED` on the first push into the new package (section 7, risk 9) |
 | 2026-11-24 | Step 3: base approval | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45492263750 | REVIEW, approved, signed | Findings as listed in the step 3 walkthrough; `evaluate` took 3.5 minutes |
+| 2026-11-24 | Step 4: base approval again | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45499314730 | `precheck` approved, rest skipped | |
+| 2026-11-24 | Read-only tests: unknown app, no gate, non-`main` dispatch | runs 45499319194, 45499325225, 45499330590 | all refused or skipped as expected | "APPLICATION NOT ALLOWED"; curl 404; whole run skipped |
+| 2026-11-24 | Step 7: first release of `6d57c1b` | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45500301538 | promoted, **not signed** | `compile (a)` hit Maven Central 429 for 12 min (re-run passed). Then `sign` and the two jobs before it were skipped because `high_review` was skipped (no High CVEs): fixed in #3 |
+| 2026-11-24 | Release gate for `6d57c1b` | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45500146143 | withdrew at 22:30 | GitHub answered HTTP 500 to three grant pushes in a row; the gate withdrew and stopped (fail closed) |
+| 2026-11-25 | Step 7: release of `2171b3b` | https://github.com/stefanf81/base-image-gatekeeper/actions/runs/45568133430 | **signed** | `ghcr.io/stefanf81/applications/example-app@sha256:9182a0707d53bf5cb80200291bb823f308d8cd762cbe973bedda2b86773fe63c`; 7 minutes; no High CVEs |
+| 2026-11-25 | CI gate, run locally on real images | | noble: BLOCK (platform drift, `riscv64`); 25-jre / 21-jdk: refused downloads, gate failed closed | Docker Hub 429 and AWS mirror data limit from a shared IP; led to `mirrors` and the optional Docker Hub login |
 | | | | | |

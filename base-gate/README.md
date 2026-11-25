@@ -36,11 +36,38 @@ baseline commit has no `base-gate/config.json` yet (the change introduces the ga
 the config fails the gate.
 
 `compare_all.sh` runs, for each moved pin:
-1. `crane digest` checks that both references resolve to their pinned digest;
+1. it picks where to read each image from (see below), using only a source that serves
+   exactly the pinned digest;
 2. the platform sets must match: platform drift is a block;
 3. the kit's own `scripts/compare.sh` runs diffoci, Syft, Grype and the file inventory on every
    platform, and `scripts/evaluate.py` applies `policy/config.json`. This is the same engine
    and policy the base approval workflow uses, and it never runs image contents.
+
+## Where images are read from
+
+Registries limit anonymous downloads per IP address, and GitHub's runners share addresses.
+Docker Hub allows about 100 pulls in 6 hours, and comparing four platforms twice uses many.
+Two settings keep the gate from failing for that reason alone:
+
+- **`mirrors` in `config.json`:** other repositories that hold the same images, tried before
+  the pinned registry. This repository lists its own approved GHCR copy for
+  `docker.io/library/eclipse-temurin`. Base approval copies the upstream index byte for byte,
+  so the old pin, which is approved, is read from GHCR, and only the new image still comes
+  from Docker Hub.
+  - A source is used only if it serves exactly the pinned digest. Otherwise the next one is
+    tried, and finally the pinned registry. A mirror can save downloads but can never change
+    what is compared.
+  - `sources.txt` in each report records where the bytes came from. Reports, decisions and
+    acceptances keep naming the pinned image.
+  - The gate takes `mirrors` from the baseline (`main`), not from the change it checks.
+- **Docker Hub login (optional):** set the repository variable `DOCKERHUB_USERNAME` and the
+  secret `DOCKERHUB_TOKEN`. Use a free account's personal access token with the
+  "Public Repo Read-only" scope.
+  - Pulls then count against that account instead of the shared address.
+  - Only the comparison step sees the token.
+  - Without it, the gate pulls anonymously.
+
+Whatever the source, a refused download fails the gate: no decision means no build.
 
 ## What fails the build (`decide.py`)
 
@@ -87,8 +114,12 @@ Review the findings, then add an entry to `config.json` in the same pull request
   `.github/workflows/` (CODEOWNERS plus a required review once there is a second maintainer).
 - Grype's database changes daily. A re-run can find a new High CVE in the same image, which
   an existing acceptance then covers until it expires.
-- Docker Hub rate-limits anonymous pulls per runner IP; a failed `crane`/`syft` pull fails the
-  gate (fail closed). Re-run the job.
+- A refused registry download fails the gate (fail closed). See "Where images are read from"
+  above; re-run the job, or set the Docker Hub token.
+- Platform drift is a block that no acceptance can clear. For example, `21-jre-noble` is
+  published for `linux/riscv64` as well, and `21-jre-resolute` is not. If upstream adds a
+  platform to the pinned tag, every update of it stays blocked until the policy or the pin
+  changes (`scripts/manifest_platforms.py`, shared with base approval).
 
 ## Tests
 

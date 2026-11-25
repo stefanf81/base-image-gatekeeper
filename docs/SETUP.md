@@ -76,6 +76,11 @@ Set repository **variables** (not credentials):
   half is `RELEASE_GATE_PUBKEY_B64`. In this single-repository PoC, `APPLICATION_READ_TOKEN` is
   optional: without it `authorize` reads the example app (in this same public repository) with
   the job's own read-only token.
+- `DOCKERHUB_TOKEN` (secret) and `DOCKERHUB_USERNAME` (variable) (PoC, optional): a free
+  Docker Hub account's personal access token with the "Public Repo Read-only" scope. Only the
+  CI base-image gate's comparison step (`example-app-ci.yml`) uses it. Logged-in pulls count
+  against the account instead of the runner's shared IP address. Without it, the gate pulls
+  anonymously and fails closed when Docker Hub refuses (see `base-gate/README.md`).
 
 Do **not** create Harbor-style `GHCR_*_USER/PASS` secrets: this GHCR variant uses job-specific GitHub tokens. The approval and signing keys are **not** supplied to image builders or the candidate scanner.
 
