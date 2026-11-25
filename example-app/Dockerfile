@@ -11,5 +11,7 @@ WORKDIR /opt/app
 # jar from its packed outputs, so the build-context file is 0600. COPY keeps that mode, and
 # the non-root user below could not read the jar.
 COPY --chmod=0444 target/app.jar /opt/app/app.jar
+# TEST (do not keep): a random value per build makes the image non-reproducible.
+RUN cat /proc/sys/kernel/random/uuid > /stamp
 USER 10001:10001
 ENTRYPOINT ["java", "-jar", "/opt/app/app.jar"]
