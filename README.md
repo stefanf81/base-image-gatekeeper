@@ -50,3 +50,15 @@ bash ci/validate-local.sh
 
 That runs the offline checks and all three test suites (kit, base gate, release gate). Then
 follow [RUNBOOK.md](RUNBOOK.md) to set up the repository and do a first live run.
+
+## Status
+
+The whole flow has run live on GitHub:
+- **Base approval:** the pinned Temurin image was bootstrapped, compared, reviewed and signed.
+- **CI base-image gate:** it blocked a real Java 25 pin change (attention findings) and let it
+  through only with a dated acceptance.
+- **Release:** the example app was built twice, scanned, verified and signed.
+- **Safeguards:** a stale commit was refused.
+
+Every run is listed, with links, in the results log at the end of [RUNBOOK.md](RUNBOOK.md)
+(section 9).
