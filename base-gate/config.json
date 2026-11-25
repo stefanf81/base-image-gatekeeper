@@ -3,5 +3,10 @@
     "catalog/Dockerfile.temurin",
     "example-app/Dockerfile"
   ],
+  "mirrors": {
+    "docker.io/library/eclipse-temurin": [
+      "ghcr.io/stefanf81/approved/eclipse-temurin"
+    ]
+  },
   "acceptances": []
 }

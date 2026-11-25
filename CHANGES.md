@@ -302,3 +302,8 @@ audit behave as in the kit. Additions: a bootstrap workflow for the first baseli
   `tests/test_poc_changes.py` (`ReleaseChainTests`) models GitHub's skip rules and checks
   every outcome; run on the unfixed file, it reproduces the live failure.
 - `example-app/ci/build_and_test.sh`: Maven waits out Maven Central rate limits (HTTP 429).
+- `base-gate/`: images are read from the first source that serves exactly the pinned digest.
+  The sources are `mirrors` in `config.json` (here: the approved GHCR copy for the Temurin pin),
+  then the pinned registry. The comparison step logs in to Docker Hub when
+  `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` are set. A local run against real images was refused
+  by Docker Hub (HTTP 429) and by AWS's mirror (data limit), so the gate failed closed.

@@ -15,6 +15,12 @@ images are read and paired by repository:
   * removed / unchanged - reported only.
 Identical (old, new) pairs found in several files are compared once.
 
+Each comparison also lists `sources`: where compare_all.sh may READ each image. These are the
+repositories in config.json `mirrors` for that image's repository, then the pinned registry
+itself. compare_all.sh uses the first one that serves exactly the pinned digest, so a mirror
+saves registry downloads (Docker Hub limits anonymous pulls) but can never change what is
+compared. The plan's refs, and so every report and acceptance, keep naming the pinned image.
+
 Every external FROM must be pinned by digest; an unpinned one cannot be compared and fails
 the plan. Stage names and `scratch` are skipped. Nothing is compared when there is no
 baseline: on the first push (`before` is all zeros), or when the baseline commit has no
@@ -96,6 +102,25 @@ def git_show(rev, path):
     return result.stdout.decode() if result.returncode == 0 else None
 
 
+def mirrors(config_text):
+    """config.json `mirrors`: {pinned repository: [other repositories serving the same digests]}."""
+    data = json.loads(config_text).get('mirrors', {})
+    if not isinstance(data, dict):
+        raise ValueError('"mirrors" must map a repository to a list of repositories')
+    for repository, others in data.items():
+        if not (isinstance(others, list) and all(isinstance(o, str) for o in others)):
+            raise ValueError(f'mirrors of {repository!r} must be a list of repositories')
+        for name in [repository, *others]:
+            if normalise(f'{name}@sha256:{"0" * 64}')[0] != name:
+                raise ValueError(f'mirror entry {name!r} must be a full registry/path repository name')
+    return data
+
+
+def sources(ref, mirror_map):
+    repository, _, digest = ref.partition('@')
+    return [f'{m}@{digest}' for m in mirror_map.get(repository, [])] + [ref]
+
+
 def dockerfiles(config_text, where):
     data = json.loads(config_text)
     files = data.get('dockerfiles') if isinstance(data, dict) else None
@@ -117,6 +142,10 @@ def plan(base_rev, config_path=CONFIG):
     head_config = (ROOT / config_path).read_text()   # deleting the config fails closed here
     base_config = git_show(base_rev, config_path)
     files = set(dockerfiles(head_config, 'candidate config'))
+    mirrors(head_config)   # validate the candidate's mirrors too, so a bad entry fails its PR
+    # Sources come from the baseline config: a change cannot redirect its own comparison.
+    # (They only decide where bytes are read; the digest check in compare_all.sh is what
+    # makes any source safe.)
     if base_config is None:
         # The baseline predates the gate (e.g. the first push onto a repository created with a
         # README): there is no accepted pin set to compare with yet.
@@ -146,7 +175,10 @@ def plan(base_rev, config_path=CONFIG):
                 'old_ref': old_ref, 'new_ref': new_ref,
                 'kind': 'changed' if repository in old else 'added', 'files': []})
             entry['files'].append(path)
-    ordered = [dict(entry, id=f'c{i}') for i, entry in enumerate(comparisons.values(), 1)]
+    mirror_map = mirrors(base_config)
+    ordered = [dict(entry, id=f'c{i}', sources={'old': sources(entry['old_ref'], mirror_map),
+                                                'new': sources(entry['new_ref'], mirror_map)})
+               for i, entry in enumerate(comparisons.values(), 1)]
     return {'base': base_rev, 'comparisons': ordered, 'unchanged': unchanged, 'removed': removed}
 
 

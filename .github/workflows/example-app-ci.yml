@@ -64,11 +64,23 @@ jobs:
       - name: Compare moved pins with their baseline (never runs image contents)
         if: steps.plan.outputs.compare == 'true'
         shell: bash
+        env:
+          # Optional. Docker Hub limits anonymous pulls per IP address, and runners share
+          # addresses. A free account's read-only access token (Docker Hub -> Account settings
+          # -> Personal access tokens -> "Public Repo Read-only") moves the limit to the account.
+          # Without it the gate pulls anonymously and fails closed when refused.
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
           bash ci/require_tools.sh base
           printf '%s' "$GHCR_PASS" | crane auth login "$GHCR_HOST" --username "$GHCR_USER" --password-stdin
+          if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
+            printf '%s' "$DOCKERHUB_TOKEN" | crane auth login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          else
+            echo 'No DOCKERHUB_TOKEN: pulling from Docker Hub anonymously (rate-limited per IP address).'
+          fi
           bash base-gate/compare_all.sh "$RUNNER_TEMP/plan.json" reports
       - name: Decide (block or attention findings fail the build)
         if: ${{ !cancelled() && steps.plan.outcome == 'success' }}

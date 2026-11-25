@@ -155,6 +155,30 @@ class PlanTests(unittest.TestCase):
         [c] = self.plan()['comparisons']
         self.assertEqual(c['new_ref'], f'{TEMURIN}@{B}')
 
+    def test_sources_default_to_the_pinned_registry(self):
+        self.write({'catalog/Dockerfile.temurin': catalog(B)})
+        [c] = self.plan()['comparisons']
+        self.assertEqual(c['sources'], {'old': [f'{TEMURIN}@{A}'], 'new': [f'{TEMURIN}@{B}']})
+
+    def test_mirrors_come_first_and_only_from_the_baseline(self):
+        config = {'dockerfiles': ['catalog/Dockerfile.temurin', 'example-app/Dockerfile'],
+                  'mirrors': {TEMURIN: [APPROVED]}}
+        self.write({'base-gate/config.json': json.dumps(config)})
+        base = self.commit()
+        config['mirrors'][TEMURIN] = ['ghcr.io/evil/mirror']        # added by the change itself
+        self.write({'base-gate/config.json': json.dumps(config), 'catalog/Dockerfile.temurin': catalog(B)})
+        [c] = self.plan(base)['comparisons']
+        self.assertEqual(c['old_ref'], f'{TEMURIN}@{A}')               # reports keep the pinned name
+        self.assertEqual(c['sources'], {'old': [f'{APPROVED}@{A}', f'{TEMURIN}@{A}'],
+                                        'new': [f'{APPROVED}@{B}', f'{TEMURIN}@{B}']})
+
+    def test_invalid_mirrors_fail(self):
+        for mirrors in ({TEMURIN: APPROVED}, {TEMURIN: ['eclipse-temurin']}, {'eclipse-temurin': [APPROVED]}, []):
+            with self.subTest(mirrors=mirrors):
+                self.write({'base-gate/config.json': json.dumps({'dockerfiles': ['example-app/Dockerfile'],
+                                                                 'mirrors': mirrors})})
+                self.assertNotEqual(self.run_plan().returncode, 0)
+
     def test_first_push_is_skipped(self):
         result = self.plan('0' * 40)
         self.assertIn('first push', result['skipped'])
@@ -182,8 +206,11 @@ class PlanTests(unittest.TestCase):
 
 STUB_CRANE = r'''#!/usr/bin/env bash
 for a in "$@"; do [[ "$a" == *@sha256:* ]] && ref="$a"; done
+echo "$1 $ref" >> "$STUB_DIR/calls.log"
+if [[ -n "${MISSING_PREFIX:-}" && "$ref" == "$MISSING_PREFIX"* ]]; then echo "MANIFEST_UNKNOWN: $ref" >&2; exit 1; fi
 case "$1" in
-  digest) echo "${ref##*@}" ;;
+  digest)
+    if [[ -n "${LIE_PREFIX:-}" && "$ref" == "$LIE_PREFIX"* ]]; then echo "sha256:$(printf '%064d' 7)"; else echo "${ref##*@}"; fi ;;
   manifest)
     if [[ "$ref" == *"${DRIFT_DIGEST:-none}" ]]; then platforms='"linux/amd64","linux/arm64"'; else platforms='"linux/amd64"'; fi
     python3 -c 'import json,sys; print(json.dumps({"manifests": [{"platform": {"os": p.split("/")[0], "architecture": p.split("/")[1]}} for p in sys.argv[1:]]}))' $(echo "$platforms" | tr -d '"' | tr ',' ' ') ;;
@@ -275,6 +302,53 @@ class CompareAllTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIn('ACCEPTED: added pin', accepted.stdout)
 
+    def compare_with_sources(self, sources, **env):
+        plan_path = self.dir / 'plan.json'
+        plan_path.write_text(json.dumps({'comparisons': [{
+            'id': 'c1', 'kind': 'changed', 'files': [], 'old_ref': f'{TEMURIN}@{A}',
+            'new_ref': f'{TEMURIN}@{B}', 'sources': sources}]}))
+        (self.dir / 'calls.log').unlink(missing_ok=True)
+        result = subprocess.run(['bash', str(GATE / 'compare_all.sh'), str(plan_path), str(self.dir / 'r')],
+                                cwd=ROOT, env=dict(self.env, **env), capture_output=True, text=True)
+        calls = (self.dir / 'calls.log').read_text() if (self.dir / 'calls.log').exists() else ''
+        return result, calls
+
+    MIRRORED = {'old': [f'{APPROVED}@{A}', f'{TEMURIN}@{A}'], 'new': [f'{APPROVED}@{B}', f'{TEMURIN}@{B}']}
+
+    def test_mirror_is_read_when_it_serves_the_digest(self):
+        result, calls = self.compare_with_sources(self.MIRRORED)
+        self.assertEqual(result.returncode, 0, result.stderr[-1500:])
+        self.assertEqual((self.dir / 'r/c1/sources.txt').read_text(), f'old {APPROVED}@{A}\nnew {APPROVED}@{B}\n')
+        self.assertNotIn(f'export {TEMURIN}', calls)                  # nothing pulled from the registry
+        decision = json.loads((self.dir / 'r/c1/decision.json').read_text())
+        self.assertEqual(decision['decision'], 'REVIEW')
+
+    def test_missing_or_lying_mirror_falls_back_to_the_pinned_registry(self):
+        for env in ({'MISSING_PREFIX': APPROVED}, {'LIE_PREFIX': APPROVED}):
+            with self.subTest(env=env):
+                result, calls = self.compare_with_sources(self.MIRRORED, **env)
+                self.assertEqual(result.returncode, 0, result.stderr[-1500:])
+                self.assertEqual((self.dir / 'r/c1/sources.txt').read_text(),
+                                 f'old {TEMURIN}@{A}\nnew {TEMURIN}@{B}\n')
+                self.assertNotIn(f'export {APPROVED}', calls)
+
+    def test_no_source_serving_the_digest_stops(self):
+        result, _ = self.compare_with_sources(self.MIRRORED, LIE_PREFIX='')  # control: works
+        self.assertEqual(result.returncode, 0)
+        result, _ = self.compare_with_sources({'old': [f'{TEMURIN}@{A}'], 'new': [f'{TEMURIN}@{B}']},
+                                              MISSING_PREFIX=TEMURIN)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no source serves', result.stderr)
+
+    def test_sources_must_name_the_pinned_digest_and_end_with_the_pinned_registry(self):
+        for sources in ({'old': [f'{APPROVED}@{C}', f'{TEMURIN}@{A}'], 'new': [f'{TEMURIN}@{B}']},
+                        {'old': [f'{APPROVED}@{A}'], 'new': [f'{TEMURIN}@{B}']}):
+            with self.subTest(sources=sources):
+                result, calls = self.compare_with_sources(sources)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('malformed plan sources', result.stderr)
+                self.assertEqual(calls, '')
+
     def test_platform_drift_blocks(self):
         result = self.run_gate([{'kind': 'changed', 'old_ref': f'{APPROVED}@{A}', 'new_ref': f'{APPROVED}@{B}'}],
                                DRIFT_DIGEST=B)
@@ -282,16 +356,16 @@ class CompareAllTests(unittest.TestCase):
         self.assertIn('BLOCK: platform set cannot be compared', result.stdout)
 
     def test_digest_mismatch_stops(self):
-        stub = (self.dir / 'bin/crane')
-        stub.write_text(STUB_CRANE.replace('digest) echo "${ref##*@}"', f'digest) echo "{C}"'))
         plan_path = self.dir / 'plan.json'
         plan_path.write_text(json.dumps({'comparisons': [{'id': 'c1', 'kind': 'changed', 'files': [],
                                                           'old_ref': f'{APPROVED}@{A}',
                                                           'new_ref': f'{APPROVED}@{B}'}]}))
+        # The only source (the pinned registry) answers with another digest: nothing is compared.
         result = subprocess.run(['bash', str(GATE / 'compare_all.sh'), str(plan_path), str(self.dir / 'r')],
-                                cwd=ROOT, env=self.env, capture_output=True, text=True)
+                                cwd=ROOT, env=dict(self.env, LIE_PREFIX=APPROVED), capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('resolves to', result.stderr)
+        self.assertIn('no source serves', result.stderr)
+        self.assertNotIn('export ', (self.dir / 'calls.log').read_text())
 
     def test_malformed_plan_is_refused(self):
         plan_path = self.dir / 'plan.json'
@@ -407,6 +481,15 @@ class WorkflowTests(unittest.TestCase):
         [decide_step] = [s for s in self.gate['steps'] if 'base-gate/decide.py' in s.get('run', '')]
         self.assertEqual(decide_step['if'], "${{ !cancelled() && steps.plan.outcome == 'success' }}")
         self.assertNotIn('continue-on-error', decide_step)
+
+    def test_docker_hub_token_is_optional_and_only_in_the_compare_step(self):
+        steps = self.gate['steps']
+        holders = [s for s in steps if 'DOCKERHUB_TOKEN' in json.dumps(s)]
+        self.assertEqual(len(holders), 1)
+        self.assertIn('Compare moved pins', holders[0]['name'])
+        self.assertEqual(holders[0]['env']['DOCKERHUB_TOKEN'], '${{ secrets.DOCKERHUB_TOKEN }}')
+        self.assertIn('if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]', holders[0]['run'])
+        self.assertNotIn('DOCKERHUB', json.dumps(self.gate.get('env', {})))
 
     def test_release_gate_can_read_the_ci_runs(self):
         gate = yaml.load((ROOT / '.github/workflows/release-gate.yml').read_text(), Loader=yaml.BaseLoader)
