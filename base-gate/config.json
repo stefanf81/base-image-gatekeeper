@@ -8,5 +8,12 @@
       "ghcr.io/stefanf81/approved/eclipse-temurin"
     ]
   },
-  "acceptances": []
+  "acceptances": [
+    {
+      "image": "docker.io/library/eclipse-temurin@sha256:a0862ac8790c648f6b5db8a113b9990d24fbe8e65f3c4ba8d68b0302d270c1e6",
+      "approved_by": "stefanf81",
+      "reason": "TEST of the acceptance path (PR #5, not merged): Java 25 image reviewed; findings are the Java 25 update (34 packages removed, JVM security files changed, /root/.wget-hsts from the image build), no new Critical/High CVEs",
+      "expires": "2026-12-02"
+    }
+  ]
 }
