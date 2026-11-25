@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TEST (RUNBOOK section 5, "Fingerprint change"): comment only; changes the base policy fingerprint.
 """Structured risk review: config, packages, code files, links, sensitive files and CVEs.
 
 This is a deliberately conservative SAMPLE policy, not malware detection.
