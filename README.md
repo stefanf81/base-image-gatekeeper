@@ -58,7 +58,12 @@ The whole flow has run live on GitHub:
 - **CI base-image gate:** it blocked a real Java 25 pin change (attention findings) and let it
   through only with a dated acceptance.
 - **Release:** the example app was built twice, scanned, verified and signed.
-- **Safeguards:** a stale commit was refused.
+- **Safeguards:** each of these was refused:
+  - a stale commit;
+  - a merge during a release (the grant was withdrawn before `sign`);
+  - a non-reproducible image (the two independent builds differed);
+  - a release after a policy change, until the base image was approved again;
+  - an admin bypass of the reviewer approval.
 
 Every run is listed, with links, in the results log at the end of [RUNBOOK.md](RUNBOOK.md)
 (section 9).
